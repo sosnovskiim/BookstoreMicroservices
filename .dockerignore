@@ -1,0 +1,29 @@
+# Служебные файлы Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Git и CI
+.git/
+.gitlab-ci.yml
+.gitignore
+
+# Локальные секреты
+.env
+.env.*
+!.env.example
+
+# Документация и тесты
+README.md
+docs/
+tests/
+*.md
+
+# IDE
+.vscode/
+.idea/

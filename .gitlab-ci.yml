@@ -1,0 +1,148 @@
+# GitLab CI/CD (требование 13).
+# Стадии: lint → test (unit) → integration (e2e) → build (образы) → deploy (заглушка).
+stages:
+  - lint
+  - test
+  - integration
+  - build
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  POSTGRES_USER: bookstore
+  POSTGRES_PASSWORD: bookstore
+  POSTGRES_DB: bookstore
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ci-secret
+
+# ---------- lint ----------
+# Ruff-чекер. allow_failure, чтобы стиль не блокировал пайплайн на старте проекта.
+lint:ruff:
+  stage: lint
+  image: python:3.12-slim
+  before_script:
+    - pip install ruff==0.7.0
+  script:
+    - ruff check services/ shared/ tests/ tests/e2e || true
+  allow_failure: true
+
+# ---------- unit ----------
+# Шаблон для unit-джоб. Каждый сервис — отдельная джоба (независимые падения).
+.unit-template: &unit-template
+  stage: test
+  image: python:3.12-slim
+  cache:
+    key: pip
+    paths: [.cache/pip]
+
+unit:identity:
+  <<: *unit-template
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r services/identity/requirements.txt
+  script:
+    - cd services/identity && pytest tests/unit -v
+
+unit:catalog:
+  <<: *unit-template
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r services/catalog/requirements.txt
+  script:
+    - cd services/catalog && pytest tests/unit -v
+
+unit:inventory:
+  <<: *unit-template
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r services/inventory/requirements.txt
+  script:
+    - cd services/inventory && pytest tests/unit -v
+
+unit:sales:
+  <<: *unit-template
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r services/sales/requirements.txt
+  script:
+    - cd services/sales && pytest tests/unit -v
+
+# ---------- integration ----------
+# Поднимает весь стек через docker compose и гоняет e2e-тесты саги.
+# allow_failure: true — чтобы долгий старт стека не блокировал остальные джобы.
+integration:e2e:
+  stage: integration
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  before_script:
+    - apk add --no-cache python3 py3-pip curl
+    - pip install --break-system-packages -r tests/e2e/requirements.txt
+    - cp .env.example .env
+    - docker compose up -d --build
+    # Ожидание готовности стека: ждём /health каждого сервиса через curl.
+    - for i in $(seq 1 30); do
+        curl -sf http://docker:8001/health >/dev/null 2>&1 && \
+        curl -sf http://docker:8002/health >/dev/null 2>&1 && \
+        curl -sf http://docker:8003/health >/dev/null 2>&1 && \
+        curl -sf http://docker:8004/health >/dev/null 2>&1 && break;
+        echo "waiting for stack ($i/30)..."; sleep 3;
+      done
+  script:
+    - RUN_E2E=1 pytest tests/e2e -v
+  after_script:
+    - docker compose logs --tail=200 || true
+    - docker compose down -v || true
+  allow_failure: true
+
+# ---------- build ----------
+# Сборка Docker-образов. Пока без push в registry — только проверка, что образ собирается.
+.build-template: &build-template
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+build:identity:
+  <<: *build-template
+  script:
+    - docker build -f services/identity/Dockerfile -t $CI_REGISTRY_IMAGE/identity:$CI_COMMIT_SHORT_SHA .
+
+build:catalog:
+  <<: *build-template
+  script:
+    - docker build -f services/catalog/Dockerfile -t $CI_REGISTRY_IMAGE/catalog:$CI_COMMIT_SHORT_SHA .
+
+build:inventory:
+  <<: *build-template
+  script:
+    - docker build -f services/inventory/Dockerfile -t $CI_REGISTRY_IMAGE/inventory:$CI_COMMIT_SHORT_SHA .
+
+build:sales:
+  <<: *build-template
+  script:
+    - docker build -f services/sales/Dockerfile -t $CI_REGISTRY_IMAGE/sales:$CI_COMMIT_SHORT_SHA .
+
+# ---------- deploy ----------
+# Заглушка под требование 14.
+deploy:staging:
+  stage: deploy
+  image: alpine:3.20
+  script:
+    - echo "Deploy stage will be configured when server is provided"
+  when: manual
+  only:
+    - main

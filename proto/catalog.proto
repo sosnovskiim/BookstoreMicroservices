@@ -1,0 +1,15 @@
+syntax = "proto3";
+package catalog;
+
+service CatalogService {
+  rpc GetBooksByIds (BooksByIdsRequest) returns (BooksByIdsResponse);
+}
+
+message BooksByIdsRequest { repeated int32 ids = 1; }
+message BookInfo {
+  int32 id = 1;
+  string name = 2;
+  int32 price = 3;
+  bool exists = 4;
+}
+message BooksByIdsResponse { repeated BookInfo books = 1; }
